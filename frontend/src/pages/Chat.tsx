@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { chat } from "../services/api";
+import type { PreviousRound } from "../services/api";
 import { useAuth } from "../context/AuthContext";
 import { ChatMessage, TypingIndicator } from "../components/ChatMessage";
 import { ChatInput } from "../components/ChatInput";
@@ -21,9 +22,9 @@ function Sidebar({ onNewChat, onLogout }: { onNewChat: () => void; onLogout: () 
       <div className="flex-1">
         <p className="text-xs text-gray-600 uppercase tracking-wide px-3 mb-2">Agents</p>
         {[
-          { icon: "🗂", label: "Rational Planner", sub: "结构化拆解 · 可行性" },
-          { icon: "🔍", label: "Critical Analyst", sub: "风险 · 盲点 · 反驳" },
-          { icon: "✨", label: "Creative Explorer", sub: "创意 · 替代方案" },
+          { icon: "🔎", label: "Researcher", sub: "证据 · 背景 · 事实" },
+          { icon: "📋", label: "Planner+Synthesizer", sub: "方案 · 步骤 · 整合" },
+          { icon: "⚖️", label: "Critic", sub: "冲突 · 盲点 · 裁决" },
         ].map((a) => (
           <div key={a.label} className="flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm">
             <span className="text-base">{a.icon}</span>
@@ -92,6 +93,7 @@ function nextId() {
 export function Chat() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [thinking, setThinking] = useState(false);
+  const lastRound = useRef<PreviousRound | null>(null);
   const { logout } = useAuth();
   const navigate = useNavigate();
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -115,7 +117,13 @@ export function Chat() {
     setThinking(true);
 
     try {
-      const res = await chat(text);
+      const res = await chat(text, lastRound.current ?? undefined);
+      // Save this round's result as context for the next message
+      lastRound.current = {
+        final_choice: res.structured_output.final_choice,
+        reasoning: res.structured_output.reasoning,
+        unresolved_issues: res.structured_output.unresolved_issues,
+      };
       const agentMsg: Message = {
         id: nextId(),
         role: "agent",
@@ -139,6 +147,7 @@ export function Chat() {
 
   const handleNewChat = useCallback(() => {
     setMessages([]);
+    lastRound.current = null;
   }, []);
 
   const handleLogout = useCallback(() => {

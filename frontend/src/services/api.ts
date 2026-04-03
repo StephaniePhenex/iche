@@ -19,28 +19,73 @@ export interface LoginResult {
   token: string;
 }
 
-export interface AgentOutput {
-  agent: string;
-  solution: string;
-  confidence: number;
-  analysis: string;
+export interface Evidence {
+  source: string;
+  content: string;
 }
 
+export interface PlanStep {
+  step: string;
+  description: string;
+}
+
+export interface Conflict {
+  id: number;
+  type: string;
+  agents_involved: string[];
+  description: string;
+  resolution_suggestion: string;
+}
+
+export interface ResearcherOutput {
+  agent: "Researcher";
+  evidence: Evidence[];
+  tool_used: string[];
+}
+
+export interface PlannerOutput {
+  agent: "Planner+Synthesizer";
+  proposed_plan: PlanStep[];
+  final_choice: string;
+  reasoning: string;
+  tool_used: string[];
+}
+
+export interface CriticOutput {
+  agent: "Critic";
+  conflicts: Conflict[];
+  resolved: string[];
+  unresolved: string[];
+  key_conflicts_prioritized: boolean;
+  tool_used: string[];
+}
+
+export interface PreviousRound {
+  final_choice: string;
+  reasoning: string;
+  unresolved_issues: string[];
+}
+
+export type AgentOutput = ResearcherOutput | PlannerOutput | CriticOutput;
+
 export interface Iteration {
-  number: number;
-  conflicts: number;
-  avg_confidence: number;
+  iteration_number: number;
   agents: AgentOutput[];
+  metadata: {
+    timestamp: string;
+    token_usage: string;
+    cost: string;
+    latency: string;
+  };
 }
 
 export interface ChatResult {
   response: string;
   structured_output: {
     iterations: Iteration[];
-    final_solution: string;
-    confidence: number;
-    why_this: string[];
-    rejected_options: string[];
+    final_choice: string;
+    reasoning: string;
+    unresolved_issues: string[];
   };
 }
 
@@ -66,154 +111,131 @@ async function post<T>(path: string, body: unknown): Promise<T> {
 // ── Mock data generators ──────────────────────────────────────────────────────
 
 function mockRegister(username: string): RegisterResult {
-  // 70% approval rate to demonstrate the pending/rejected states.
   const roll = Math.random();
-  if (roll < 0.15) {
-    return { approved: false, message: "Registration rejected: username already taken." };
-  }
-  if (roll < 0.30) {
-    return { approved: false, message: "Registration pending admin review. You'll be notified." };
-  }
+  if (roll < 0.15) return { approved: false, message: "Registration rejected: username already taken." };
+  if (roll < 0.30) return { approved: false, message: "Registration pending admin review. You'll be notified." };
   return { approved: true, message: `Welcome, ${username}! Your account is ready.` };
 }
 
 function mockLogin(): LoginResult {
-  // Generate a fake JWT-like token.
   const payload = btoa(JSON.stringify({ sub: "mock_user", iat: Date.now() }));
   return { token: `mock.${payload}.signature` };
 }
 
-/** Heuristic: demo itinerary when no backend — not from a live model. */
-function isMockOkinawaTripQuery(q: string): boolean {
-  const s = q.trim();
-  if (!s) return false;
-  const okinawa = /冲绳|沖繩|琉球/i.test(s);
-  const trip = /行程|旅游|旅行|攻略|度假|玩/.test(s) || /\d\s*天|五天|七日|一周/.test(s);
-  return okinawa && trip;
-}
+function mockChat(message: string): ChatResult {
+  const topic = message.trim().slice(0, 120) || "(empty prompt)";
 
-function mockOkinawaAgents(userLine: string): AgentOutput[] {
-  const wantAmericanVillage = /美国村|美國村|北谷|北谷町/i.test(userLine);
-  const day2 = wantAmericanVillage
-    ? "美国村（北谷）— 海滨、日落、餐饮集中；住附近可减少折返。"
-    : "中部 — 嘉手纳展望台或东南植物园一带，傍晚可到美国村用餐（若未安排住宿可改为那霸往返）。";
+  const researcher: ResearcherOutput = {
+    agent: "Researcher",
+    evidence: [
+      { source: "domain knowledge", content: `Key context for "${topic}": successful approaches require clear goals with measurable success criteria established upfront.` },
+      { source: "general knowledge", content: "Common pitfalls: underestimating complexity, skipping validation steps, and not accounting for hard constraints." },
+      { source: "expert consensus", content: "Iterative/phased approaches consistently outperform big-bang execution in uncertain environments — validate assumptions early." },
+      { source: "user context", content: "The specific constraints you have shape which options are viable. Fixed constraints must be respected; flexible ones can be negotiated." },
+    ],
+    tool_used: ["DomainKnowledge", "WebSearch"],
+  };
 
-  const plan = [
-    "第1天：抵达那霸 → 酒店入住 → 国际通散步晚餐（轻松适应时差与气候）。",
-    `第2天：${day2}`,
-    "第3天：北部 — 美丽海水族馆、古宇利大桥一带（车程长，早出晚归；旺季先订票）。",
-    "第4天：离岛或海滩日 — 庆良间诸岛浮潜/潜水（视海况）或南部知念岬、斋场御岳文化线。",
-    "第5天：那霸购物/首里城公园 → 机场（预留还车与国际线提前量）。",
-  ].join("\n");
+  const planner: PlannerOutput = {
+    agent: "Planner+Synthesizer",
+    proposed_plan: [
+      { step: "Step 1: Clarify objectives", description: "Define specific, measurable goals. Identify success criteria and hard constraints upfront." },
+      { step: "Step 2: Map constraints and resources", description: "Inventory time, budget, skills, and dependencies. Distinguish fixed from flexible constraints." },
+      { step: "Step 3: Generate and evaluate options", description: "Develop 2–3 concrete approaches using available evidence. Evaluate each against goals and constraints." },
+      { step: "Step 4: Execute with milestones", description: "Break the chosen approach into concrete actions with checkpoints to catch problems early." },
+      { step: "Step 5: Build contingencies", description: "Identify top 2–3 failure modes and prepare fallback actions for each." },
+    ],
+    final_choice: `For "${topic}": adopt a phased, iterative approach — start with a minimal viable version, validate it against real constraints, then expand. This balances speed with risk management and allows course-correction before full commitment.`,
+    reasoning: "A phased approach reduces commitment risk, allows early validation, and adapts as new information emerges. Full upfront planning fails when initial assumptions prove wrong.",
+    tool_used: ["Reasoning", "Calculator"],
+  };
 
-  return [
+  const critic1: CriticOutput = {
+    agent: "Critic",
+    conflicts: [
+      {
+        id: 1,
+        type: "logic_conflict",
+        agents_involved: ["Planner+Synthesizer", "Researcher"],
+        description: "Planner treats phased approach as inherently lower-risk, but Researcher evidence shows phased rollouts can accumulate debt if phase boundaries aren't explicitly defined.",
+        resolution_suggestion: "Define explicit phase boundaries and acceptance criteria to prevent debt accumulation between phases.",
+      },
+      {
+        id: 2,
+        type: "fact_conflict",
+        agents_involved: ["Researcher", "Planner+Synthesizer"],
+        description: "Researcher flags 'underestimating complexity' as a top failure mode, but no explicit complexity estimation step appears in the plan.",
+        resolution_suggestion: "Add an explicit complexity estimation step, or expand Step 2 to include it before option generation.",
+      },
+    ],
+    resolved: [],
+    unresolved: [
+      "Phase boundary definition missing — risk of technical debt accumulation",
+      "Complexity estimation absent from proposed plan steps",
+    ],
+    key_conflicts_prioritized: true,
+    tool_used: ["ConflictAnalysis", "LogicCheck"],
+  };
+
+  const critic2: CriticOutput = {
+    agent: "Critic",
+    conflicts: [
+      {
+        id: 1,
+        type: "preference_conflict",
+        agents_involved: ["Planner+Synthesizer", "Researcher"],
+        description: "Plan milestones are still partially time-based. Evidence supports outcome-based criteria as more reliable indicators of readiness.",
+        resolution_suggestion: "Replace time-only milestones with outcome-based success criteria (e.g., 'validate N assumptions' rather than 'complete in 4 weeks').",
+      },
+    ],
+    resolved: [
+      "Phase boundary definition: resolved — Step 1 now explicitly defines phase boundaries",
+      "Complexity estimation: resolved — embedded in scope refinement step",
+    ],
+    unresolved: ["Milestones partially time-based — should be primarily outcome-based"],
+    key_conflicts_prioritized: true,
+    tool_used: ["ConflictAnalysis"],
+  };
+
+  const critic3: CriticOutput = {
+    agent: "Critic",
+    conflicts: [],
+    resolved: [
+      "Phase boundary definition: resolved",
+      "Complexity estimation: resolved",
+      "Milestone criteria: resolved — final plan uses outcome-based success criteria",
+    ],
+    unresolved: [],
+    key_conflicts_prioritized: true,
+    tool_used: ["ConflictAnalysis"],
+  };
+
+  const iterations: Iteration[] = [
     {
-      agent: "System Architect",
-      solution: `【示例 5 日冲绳骨架行程】（mock 演示，出行前请自行核对开放时间与预约）\n\n${plan}`,
-      confidence: 0.84,
-      analysis:
-        "按「抵达缓冲 → 中部/美国村 → 北部大景点 → 离岛或南部 → 离开日」排布，减少走回头路。",
+      iteration_number: 1,
+      agents: [researcher, planner, critic1],
+      metadata: { timestamp: new Date().toISOString(), token_usage: "", cost: "", latency: "mock" },
     },
     {
-      agent: "Critical Analyst",
-      solution:
-        "风险提示：黄金周/连假租车与水族馆极难订；北部单程车程常 1.5h+；紫外线与台风季需备用室内方案。建议确认是否自驾及酒店取消政策。",
-      confidence: 0.79,
-      analysis:
-        "把「能否早起」「是否带娃/老人」「预算档位」问清之前，不要锁死离岛与潜水项目。",
+      iteration_number: 2,
+      agents: [researcher, { ...planner, final_choice: `Refined for "${topic}": two-phase approach — Phase 1 validates core assumptions (outcome-based); Phase 2 scales with confidence from Phase 1 learnings.` }, critic2],
+      metadata: { timestamp: new Date().toISOString(), token_usage: "", cost: "", latency: "mock" },
     },
     {
-      agent: "Divergent Thinker",
-      solution:
-        "若不想赶北部：可把第3天换成「浦添大公园 + Outlet + 中部海滩」，北部压缩为半日展望；或把离岛改到渡嘉敷一日。",
-      confidence: 0.72,
-      analysis:
-        "天气差时优先换室内（博物馆、DFS、商场）并保留美国村夜景为弹性块。",
+      iteration_number: 3,
+      agents: [researcher, { ...planner, final_choice: `Final for "${topic}": two-phase phased approach with outcome-based validation gates. Phase 1 validates at low cost; Phase 2 scales with confidence. All conflicts resolved.` }, critic3],
+      metadata: { timestamp: new Date().toISOString(), token_usage: "", cost: "", latency: "mock" },
     },
   ];
-}
-
-function mockChat(message: string): ChatResult {
-  const lower = message.toLowerCase();
-  const topic =
-    message.trim().length > 200 ? `${message.trim().slice(0, 200)}…` : message.trim() || "(empty prompt)";
-
-  const okinawaDemo = isMockOkinawaTripQuery(message);
-  const agents: AgentOutput[] = okinawaDemo
-    ? mockOkinawaAgents(message)
-    : [
-        {
-          agent: "System Architect",
-          solution: `Structured plan with clear priorities and day-by-day constraints for: "${topic}"`,
-          confidence: 0.82,
-          analysis:
-            "Favors an ordered breakdown (constraints first, then activities) so tradeoffs stay visible.",
-        },
-        {
-          agent: "Critical Analyst",
-          solution: `Validate assumptions (timing, budget, mobility, weather) before locking details for: "${topic}"`,
-          confidence: 0.78,
-          analysis:
-            "Calls out unstated risks and suggests checkpoints so the plan survives real-world friction.",
-        },
-        {
-          agent: "Divergent Thinker",
-          solution: `Alternate ordering or backup options if one day slips — still centered on: "${topic}"`,
-          confidence: 0.71,
-          analysis:
-            "Keeps flexibility without abandoning the core goal; useful when external factors shift.",
-        },
-      ];
-
-  const isSimple =
-    lower.includes("what") || lower.includes("which") || lower.includes("should");
-
-  const iterations: Iteration[] = isSimple
-    ? [
-        { number: 1, conflicts: 2, avg_confidence: 0.77, agents },
-        { number: 2, conflicts: 1, avg_confidence: 0.84, agents },
-      ]
-    : [
-        { number: 1, conflicts: 3, avg_confidence: 0.77, agents },
-        { number: 2, conflicts: 2, avg_confidence: 0.81, agents },
-        { number: 3, conflicts: 1, avg_confidence: 0.87, agents },
-      ];
-
-  const structured_output = okinawaDemo
-    ? {
-        iterations,
-        final_solution: agents[0].solution,
-        confidence: 0.85,
-        why_this: [
-          "日程按地理动线拆分，减少那霸—北部反复折返",
-          "第2天可贴合「美国村」等明确约束（若你在问题里提到）",
-          "预留离开日与海况/旺季的弹性说明",
-        ],
-        rejected_options: [
-          "五天里每天跨那霸—北部往返（车程与时间成本高）",
-          "离岛与北部水族馆都塞满且不留缓冲（遇坏天气易全盘崩）",
-        ],
-      }
-    : {
-        iterations,
-        final_solution: agents[0].solution,
-        confidence: 0.85,
-        why_this: [
-          "Best fit to the problem as stated",
-          "Highest-confidence line among the three agents",
-          "Tradeoffs deemed acceptable for the planning horizon",
-        ],
-        rejected_options: [
-          "Single rigid schedule with no backup day",
-          "Optimistic pacing with no buffer for delays",
-        ],
-      };
 
   return {
-    response: okinawaDemo
-      ? `Multi-agent deliberation complete (${iterations.length} iterations). 以下为前端 mock 示例行程，非实时检索；真实规划请接 /api/chat 或自行查证。`
-      : `Multi-agent deliberation complete (${iterations.length} iterations). Convergence achieved. (Mock UI data — connect a real API for task-specific answers.)`,
-    structured_output,
+    response: `Multi-agent deliberation complete (3 iterations). (Mock UI data — connect /api/chat for live answers.)`,
+    structured_output: {
+      iterations,
+      final_choice: `Final for "${topic}": two-phase phased approach with outcome-based validation gates. Phase 1 validates core assumptions at low cost; Phase 2 scales with confidence. All conflicts resolved.`,
+      reasoning: "Full convergence achieved. Approach is pragmatic, risk-aware, and achievable within realistic constraints. Phased structure provides flexibility while maintaining clear direction.",
+      unresolved_issues: [],
+    },
   };
 }
 
@@ -236,10 +258,13 @@ export async function login(username: string, password: string): Promise<LoginRe
   return post<LoginResult>("/api/login", { username, password });
 }
 
-export async function chat(message: string): Promise<ChatResult> {
+export async function chat(message: string, previousRound?: PreviousRound): Promise<ChatResult> {
   if (USE_MOCK) {
     await new Promise((r) => setTimeout(r, 1800 + Math.random() * 1000));
     return mockChat(message);
   }
-  return post<ChatResult>("/api/chat", { message });
+  return post<ChatResult>("/api/chat", {
+    message,
+    ...(previousRound ? { previous_round: previousRound } : {}),
+  });
 }

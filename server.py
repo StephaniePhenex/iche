@@ -11,8 +11,6 @@ Then set frontend VITE_API_URL=http://127.0.0.1:8000 and restart Vite.
 from __future__ import annotations
 
 import base64
-import contextlib
-import io
 import json
 import time
 
@@ -20,86 +18,31 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 
 import orchestrator
-import utils
 
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}})
 
 
-def _norm_text(s: str) -> str:
-    return " ".join((s or "").split())
-
-
-def _compose_final_solution(state: dict, synthesized: str) -> str:
-    """
-    Synthesizer only keeps one agent's solution; users expect every agent's full text.
-    Append other agents' last-round solutions under clear headings.
-    """
-    syn = (synthesized or "").strip()
-    iters = state.get("iterations") or []
-    if not iters:
-        return syn
-    so = iters[-1].get("structured_outputs") or {}
-    if not so:
-        return syn
-
-    nsyn = _norm_text(syn)
-    seen_norms: set[str] = {nsyn} if nsyn else set()
-    blocks: list[str] = []
-
-    if syn:
-        blocks.append("【综合结论】\n" + syn)
-
-    for role, out in so.items():
-        sol = (out.get("solution") or "").strip()
-        if not sol:
-            continue
-        n = _norm_text(sol)
-        if n in seen_norms:
-            continue
-        seen_norms.add(n)
-        label = role.replace("_", " ").strip() or "Agent"
-        blocks.append(f"\n\n【{label} · 完整提案】\n{sol}")
-
-    return "".join(blocks).strip() if blocks else syn
-
-
 def _state_to_chat_result(state: dict) -> dict:
-    iterations_out: list[dict] = []
-    for i, rec in enumerate(state.get("iterations") or [], start=1):
-        so = rec.get("structured_outputs") or {}
-        agents = []
-        for role, out in so.items():
-            agents.append(
-                {
-                    "agent": role,
-                    "solution": out.get("solution") or "",
-                    "confidence": float(out.get("confidence") or 0.0),
-                    "analysis": out.get("analysis") or "",
-                }
-            )
-        n_conf = len(rec.get("conflicts") or [])
-        avg_conf = utils.average_confidence(so) if so else 0.0
-        iterations_out.append(
-            {
-                "number": i,
-                "conflicts": n_conf,
-                "avg_confidence": avg_conf,
-                "agents": agents,
-            }
-        )
+    iterations_out = [
+        {
+            "iteration_number": rec.get("iteration_number", i + 1),
+            "agents": rec.get("agents", []),
+            "metadata": rec.get("metadata", {
+                "timestamp": "", "token_usage": "", "cost": "", "latency": "",
+            }),
+        }
+        for i, rec in enumerate(state.get("iterations") or [])
+    ]
 
     final = state.get("final_answer") or {}
-    synthesized = final.get("final_solution") or ""
-    display_final = _compose_final_solution(state, synthesized)
     return {
-        "response": f"Multi-agent deliberation complete ({len(iterations_out)} iterations).",
+        "response": f"Multi-agent deliberation complete ({len(iterations_out)} iteration(s)).",
         "structured_output": {
             "iterations": iterations_out,
-            "final_solution": display_final,
-            "confidence": float(final.get("confidence") or 0.0),
-            "why_this": list(final.get("why_this") or []),
-            "rejected_options": list(final.get("rejected_options") or []),
+            "final_choice": final.get("final_choice") or "",
+            "reasoning": final.get("reasoning") or "",
+            "unresolved_issues": list(final.get("unresolved_issues") or []),
         },
     }
 
@@ -131,9 +74,10 @@ def chat():
     if not message:
         return jsonify({"message": "message required"}), 400
 
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf):
-        state = orchestrator.run_deliberation(message)
+    # Optional: context from the previous message's deliberation result
+    previous_round = data.get("previous_round") or None
+
+    state = orchestrator.run_deliberation(message, previous_round=previous_round)
 
     return jsonify(_state_to_chat_result(state))
 

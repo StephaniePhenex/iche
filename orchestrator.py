@@ -1,238 +1,110 @@
 """
-orchestrator.py — Deliberation loop controller.
+orchestrator.py — 3-agent deliberation loop controller.
 
-Controls:
-  1. Parallel agent execution
-  2. Output structuring
-  3. Critic analysis
-  4. Conflict resolution injection
-  5. Convergence check
-  6. Final synthesis
+Flow per round (sequential within each iteration):
+  1. Researcher   — collects evidence
+  2. Planner+Synthesizer — builds plan + drafts final synthesis (using evidence)
+  3. Critic       — identifies conflicts between evidence and plan
+
+Convergence: unresolved conflicts < CONVERGENCE_THRESHOLD, or max iterations reached.
 """
 
-import json
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
 from typing import Optional
 
-import agents as agent_module
-import critic as critic_module
-import state as state_module
+import agents
 import structurer
 import utils
 
 
-# ── Configuration ─────────────────────────────────────────────────────────────
-
 MAX_ITERATIONS = 3
-CONVERGENCE_CONFLICT_THRESHOLD = 2  # Stop if conflicts < this
+CONVERGENCE_THRESHOLD = 1  # Stop when len(unresolved) < this
 
 
-# ── Parallel agent runner ─────────────────────────────────────────────────────
-
-def _run_agents_parallel(
-    task: str,
-    conflicts: Optional[list],
-    iteration: int,
-) -> dict[str, str]:
-    """Run all agents concurrently. Returns {role: raw_output}."""
-    roles = list(agent_module.AGENTS.keys())
-    results = {}
-
-    with ThreadPoolExecutor(max_workers=len(roles)) as pool:
-        futures = {
-            pool.submit(
-                agent_module.run_agent,
-                role,
-                task,
-                conflicts,
-                iteration=iteration,
-            ): role
-            for role in roles
-        }
-        for future in as_completed(futures):
-            role = futures[future]
-            try:
-                results[role] = future.result()
-            except Exception as exc:
-                results[role] = (
-                    f"[Analysis]\nAgent error: {exc}\n\n"
-                    "[Structured Output]\nJSON ONLY:\n"
-                    '{"solution": "error", "assumptions": [], "tradeoffs": [], '
-                    '"risks": ["agent_execution_error"], "failure_cases": [], "confidence": 0.0}'
-                )
-
-    return results
+def _ts() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
-# ── Structuring ───────────────────────────────────────────────────────────────
-
-def _structure_all(raw_outputs: dict[str, str]) -> dict[str, dict]:
-    return {
-        role: structurer.structure_output(raw, role)
-        for role, raw in raw_outputs.items()
+def run_deliberation(task: str, previous_round: Optional[dict] = None) -> dict:
+    """Execute the full multi-agent deliberation loop. Returns the final state dict."""
+    state: dict = {
+        "task": task,
+        "iterations": [],
+        "final_answer": None,
     }
+    prev_unresolved: list = []
 
-
-# ── Synthesizer ───────────────────────────────────────────────────────────────
-
-def _synthesize(state: dict) -> dict:
-    """
-    Combine all final structured outputs into a unified decision.
-    Uses the last iteration's structured outputs.
-    """
-    iterations = state["iterations"]
-    if not iterations:
-        return {"final_solution": "No deliberation completed.", "why_this": [], "rejected_options": [], "confidence": 0.0}
-
-    last = iterations[-1]
-    structured = last["structured_outputs"]
-
-    # Collect all solutions
-    solutions = {role: out.get("solution", "") for role, out in structured.items()}
-    confidences = {role: float(out.get("confidence", 0.5)) for role, out in structured.items()}
-
-    # Pick highest-confidence solution as primary
-    primary_role = max(confidences, key=confidences.get)
-    primary_solution = solutions[primary_role]
-
-    # Build "why this": merge agreements + primary analysis
-    resolution = last.get("resolution", {})
-    agreements = resolution.get("agreements", [])
-    why_this = list(agreements) if agreements else []
-    why_this.append(f"Highest confidence solution from {primary_role} ({confidences[primary_role]:.0%})")
-
-    # Rejected: solutions that diverged significantly from primary
-    rejected = []
-    for role, sol in solutions.items():
-        if role == primary_role:
-            continue
-        sim = utils.cosine_similarity(primary_solution, sol)
-        if sim < 0.3:
-            rejected.append(f"{role}: {sol}")
-
-    avg_conf = utils.average_confidence(structured)
-
-    # Consensus solution: merge primary with any common elements
-    all_assumptions = []
-    all_risks = []
-    seen_a, seen_r = set(), set()
-    for out in structured.values():
-        for a in out.get("assumptions", []):
-            if a not in seen_a:
-                all_assumptions.append(a)
-                seen_a.add(a)
-        for r in out.get("risks", []):
-            if r not in seen_r:
-                all_risks.append(r)
-                seen_r.add(r)
-
-    # Build a richer final solution description
-    if len(iterations) >= 2:
-        # Check convergence across iterations
-        iter1_solutions = set(iterations[0]["structured_outputs"][r].get("solution", "")[:50] for r in structured)
-        iter_last_solutions = set(structured[r].get("solution", "")[:50] for r in structured)
-        converged = iter1_solutions != iter_last_solutions
-
-        if converged:
-            why_this.insert(0, f"Agents converged over {len(iterations)} iteration(s) from divergent initial positions")
-
-    return {
-        "final_solution": primary_solution,
-        "why_this": why_this,
-        "rejected_options": rejected,
-        "confidence": avg_conf,
-        "supporting_agents": [r for r in structured if r != primary_role],
-        "consensus_risks": all_risks[:5],
-        "consensus_assumptions": all_assumptions[:5],
-    }
-
-
-# ── Iteration display ─────────────────────────────────────────────────────────
-
-def _print_agent_outputs(structured: dict[str, dict]) -> None:
-    for role, out in structured.items():
-        analysis_preview = (out.get("analysis") or "")[:200].replace("\n", " ")
-        conf = out.get("confidence", 0.0)
-        sol_preview = (out.get("solution") or "")[:100]
-        utils.print_section(
-            f"{role}  (confidence: {conf:.0%})",
-            f"Solution: {sol_preview}\nAnalysis: {analysis_preview}...",
-            color=utils.BLUE,
-        )
-
-
-def _print_similarities(structured: dict[str, dict]) -> None:
-    sims = utils.pairwise_similarities(structured)
-    if sims:
-        print(utils.DIM + "  Solution similarities:" + utils.RESET)
-        for pair, score in sims.items():
-            bar = "█" * int(score * 10) + "░" * (10 - int(score * 10))
-            print(f"    {pair}: [{bar}] {score:.0%}")
-
-
-# ── Main orchestrator ─────────────────────────────────────────────────────────
-
-def run_deliberation(task: str) -> dict:
-    """
-    Execute the full multi-agent deliberation loop.
-
-    Returns the final state dict.
-    """
-    state = state_module.make_state(task)
-    active_conflicts = None
+    # previous_round is only injected into the first iteration of this deliberation
+    round_ctx = previous_round
 
     for iteration_num in range(1, MAX_ITERATIONS + 1):
         utils.print_iteration_banner(iteration_num)
+        t_start = datetime.now(timezone.utc)
 
-        # 1. Run all agents in parallel
-        print(utils._color("  Running agents in parallel...", utils.DIM))
-        raw_outputs = _run_agents_parallel(task, active_conflicts, iteration_num)
+        # ── Step 1: Researcher ────────────────────────────────────────────────
+        print(utils._color("  [1/3] Researcher collecting evidence...", utils.DIM))
+        raw_researcher = agents.run_researcher(
+            task, prev_unresolved, round_ctx, iteration=iteration_num
+        )
+        researcher_out = structurer.parse_researcher(raw_researcher)
+        evidence = researcher_out.get("evidence", [])
+        print(utils._color(f"  → {len(evidence)} evidence item(s).", utils.GREEN))
 
-        # 2. Structure outputs
-        print(utils._color("  Structuring outputs...", utils.DIM))
-        structured_outputs = _structure_all(raw_outputs)
+        # ── Step 2: Planner+Synthesizer ───────────────────────────────────────
+        print(utils._color("  [2/3] Planner+Synthesizer building plan...", utils.DIM))
+        raw_planner = agents.run_planner(
+            task, evidence, prev_unresolved, round_ctx, iteration=iteration_num
+        )
+        planner_out = structurer.parse_planner(raw_planner)
+        n_steps = len(planner_out.get("proposed_plan", []))
+        print(utils._color(f"  → {n_steps} step(s). Final choice drafted.", utils.GREEN))
 
-        # 3. Display agent outputs
-        _print_agent_outputs(structured_outputs)
-        _print_similarities(structured_outputs)
+        # ── Step 3: Critic ────────────────────────────────────────────────────
+        print(utils._color("  [3/3] Critic analyzing conflicts...", utils.DIM))
+        raw_critic = agents.run_critic(
+            task, evidence, planner_out, round_ctx, iteration=iteration_num
+        )
+        critic_out = structurer.parse_critic(raw_critic)
+        conflicts = critic_out.get("conflicts", [])
+        resolved = critic_out.get("resolved", [])
+        unresolved = critic_out.get("unresolved", [])
 
-        # 4. Run critic
-        print(utils._color("\n  Running critic...", utils.DIM))
-        critique = critic_module.run_critic(structured_outputs, iteration=iteration_num)
-        active_conflicts = critique.get("conflicts", [])
+        latency_ms = int((datetime.now(timezone.utc) - t_start).total_seconds() * 1000)
 
-        # 5. Record iteration
-        record = state_module.make_iteration_record()
-        record["raw_outputs"] = raw_outputs
-        record["structured_outputs"] = structured_outputs
-        record["conflicts"] = active_conflicts
-        record["resolution"] = critique
-        state_module.push_iteration(state, record)
-
-        # 6. Display critique
-        n_conflicts = len(active_conflicts)
-        avg_conf = utils.average_confidence(structured_outputs)
-
+        # ── Display critic report ─────────────────────────────────────────────
         print()
-        print(utils._color(f"  Critic Report:", utils.BOLD + utils.MAGENTA))
-        print(f"    Agreements  : {len(critique.get('agreements', []))}")
-        print(utils._color(f"    Conflicts   : {n_conflicts}", utils.RED if n_conflicts >= CONVERGENCE_CONFLICT_THRESHOLD else utils.GREEN))
-        print(f"    Avg Confidence: {avg_conf:.0%}")
+        print(utils._color("  Critic Report:", utils.BOLD + utils.MAGENTA))
+        print(f"    Conflicts  : {len(conflicts)}")
+        print(f"    Resolved   : {len(resolved)}")
+        print(utils._color(
+            f"    Unresolved : {len(unresolved)}",
+            utils.RED if len(unresolved) >= CONVERGENCE_THRESHOLD else utils.GREEN,
+        ))
+        for i, c in enumerate(conflicts, 1):
+            print(utils._color(f"\n  [{i}] [{c.get('type','')}] {c.get('description','')[:100]}", utils.RED))
+            print(utils._color(f"      → {c.get('resolution_suggestion','')}", utils.YELLOW))
 
-        if active_conflicts:
-            print(utils._color("  Conflicts detected:", utils.RED))
-            for i, c in enumerate(active_conflicts, 1):
-                utils.print_conflict(c, i)
+        # ── Record iteration ──────────────────────────────────────────────────
+        state["iterations"].append({
+            "iteration_number": iteration_num,
+            "previous_round": round_ctx,  # None after first iteration
+            "agents": [researcher_out, planner_out, critic_out],
+            "metadata": {
+                "timestamp": _ts(),
+                "token_usage": "",
+                "cost": "",
+                "latency": f"{latency_ms}ms",
+            },
+        })
 
-        if critique.get("recommendation"):
-            print()
-            print(utils._color("  Recommendation: ", utils.YELLOW) + critique["recommendation"])
+        prev_unresolved = unresolved
+        round_ctx = None  # only inject previous_round into the first iteration
 
-        # 7. Convergence check
-        if n_conflicts < CONVERGENCE_CONFLICT_THRESHOLD:
+        # ── Convergence check ─────────────────────────────────────────────────
+        if len(unresolved) < CONVERGENCE_THRESHOLD:
             print()
             print(utils._color(
-                f"  ✓ Convergence reached ({n_conflicts} conflict(s) remaining). Stopping.",
+                f"  ✓ Convergence reached ({len(unresolved)} unresolved). Stopping.",
                 utils.GREEN + utils.BOLD,
             ))
             break
@@ -240,12 +112,23 @@ def run_deliberation(task: str) -> dict:
         if iteration_num < MAX_ITERATIONS:
             print()
             print(utils._color(
-                f"  ↺ {n_conflicts} conflicts remain. Injecting resolution prompts...",
+                f"  ↺ {len(unresolved)} conflict(s) unresolved. Starting next round...",
                 utils.YELLOW,
             ))
 
-    # 8. Synthesize final answer
-    final = _synthesize(state)
-    state_module.set_final_answer(state, final)
+    # ── Final answer: taken from last iteration's Planner + Critic ───────────
+    last = state["iterations"][-1]
+    last_planner = next(
+        (a for a in last["agents"] if a.get("agent") == "Planner+Synthesizer"), {}
+    )
+    last_critic = next(
+        (a for a in last["agents"] if a.get("agent") == "Critic"), {}
+    )
+    state["final_answer"] = {
+        "final_choice": last_planner.get("final_choice", ""),
+        "reasoning": last_planner.get("reasoning", ""),
+        "unresolved_issues": last_critic.get("unresolved", []),
+    }
 
+    utils.print_final(state["final_answer"])
     return state

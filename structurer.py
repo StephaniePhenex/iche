@@ -1,170 +1,115 @@
 """
-structurer.py — Parse and validate agent outputs.
+structurer.py — Role-specific JSON parsers for agent outputs.
 
-Extracts [Analysis] and [Structured Output] sections from raw model text.
-Validates JSON schema. Falls back to LLM repair if JSON is malformed.
+Each parser extracts the relevant fields for its agent role with a safe fallback.
 """
 
 import re
 import json
-from typing import Optional
-from models import call_model, repair_model_name
-
-# ── Required keys in structured output ───────────────────────────────────────
-
-REQUIRED_KEYS = {"solution", "assumptions", "tradeoffs", "risks", "failure_cases", "confidence"}
-
-EXPECTED_TYPES = {
-    "solution": str,
-    "assumptions": list,
-    "tradeoffs": list,
-    "risks": list,
-    "failure_cases": list,
-    "confidence": (int, float),
-}
 
 
-# ── Extraction ────────────────────────────────────────────────────────────────
+# ── JSON extraction ───────────────────────────────────────────────────────────
 
-def extract_sections(raw: str) -> tuple[str, str]:
-    """Return (analysis_text, structured_json_str)."""
-    analysis = ""
-    structured = ""
-
-    analysis_match = re.search(
-        r"\[Analysis\](.*?)(?=\[Structured Output\]|$)",
-        raw,
-        re.DOTALL | re.IGNORECASE,
-    )
-    if analysis_match:
-        analysis = analysis_match.group(1).strip()
-
-    structured_match = re.search(
-        r"\[Structured Output\].*?JSON ONLY:\s*(\{.*\})",
-        raw,
-        re.DOTALL | re.IGNORECASE,
-    )
-    if not structured_match:
-        # Fallback: grab last JSON object in the text
-        all_json = re.findall(r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)?\}", raw, re.DOTALL)
-        if all_json:
-            structured = all_json[-1]
-    else:
-        structured = structured_match.group(1).strip()
-
-    return analysis, structured
-
-
-def _parse_json(text: str) -> Optional[dict]:
-    """Attempt JSON parse with minor cleanup."""
-    text = text.strip()
-    # Strip markdown fences if present
+def _extract_json(raw: str) -> dict | None:
+    """Strip markdown fences and parse the first JSON object found."""
+    text = raw.strip()
     text = re.sub(r"^```(?:json)?", "", text).strip()
     text = re.sub(r"```$", "", text).strip()
     try:
         return json.loads(text)
     except json.JSONDecodeError:
-        return None
+        pass
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group(0))
+        except json.JSONDecodeError:
+            pass
+    return None
 
 
-def _validate_schema(data: dict) -> list[str]:
-    """Return list of validation errors (empty = valid)."""
-    errors = []
-    for key in REQUIRED_KEYS:
-        if key not in data:
-            errors.append(f"Missing key: '{key}'")
-            continue
-        expected = EXPECTED_TYPES[key]
-        if not isinstance(data[key], expected):
-            errors.append(
-                f"Key '{key}' expected {expected}, got {type(data[key]).__name__}"
-            )
-    if "confidence" in data:
-        c = data["confidence"]
-        if isinstance(c, (int, float)) and not (0.0 <= c <= 1.0):
-            errors.append(f"Confidence {c} out of range [0.0, 1.0]")
-    return errors
+# ── Role-specific parsers ─────────────────────────────────────────────────────
+
+def _tool_used(data: dict, default: list) -> list:
+    tools = data.get("tool_used")
+    if isinstance(tools, list):
+        return [str(t) for t in tools]
+    return default
 
 
-# Preserve full raw text for repair (very long answers); cap only for pathological size.
-_REPAIR_INPUT_MAX_CHARS = 200_000
-
-
-def _repair_with_llm(raw_output: str) -> Optional[dict]:
-    """Ask a model to extract and fix the JSON from a malformed output."""
-    snippet = raw_output if len(raw_output) <= _REPAIR_INPUT_MAX_CHARS else raw_output[:_REPAIR_INPUT_MAX_CHARS]
-    repair_prompt = (
-        "The following text is a model response that should contain a JSON object "
-        "with these exact keys: solution (str), assumptions (list), tradeoffs (list), "
-        "risks (list), failure_cases (list), confidence (float 0-1).\n\n"
-        "The `solution` string may be very long — preserve its FULL text verbatim; do not shorten or summarize it.\n\n"
-        "Extract and return ONLY the valid JSON object. Nothing else.\n\n"
-        f"Text:\n{snippet}"
-    )
-    try:
-        repaired = call_model(
-            repair_model_name(),
-            repair_prompt,
-            "You extract and repair JSON only. Reply with a single JSON object, no markdown fences.",
-        )
-        _, structured_str = extract_sections(repaired)
-        if not structured_str:
-            structured_str = repaired
-        return _parse_json(structured_str)
-    except Exception:
-        return None
-
-
-def _apply_defaults(data: dict) -> dict:
-    """Fill missing optional fields with safe defaults."""
-    defaults = {
-        "assumptions": [],
-        "tradeoffs": [],
-        "risks": [],
-        "failure_cases": [],
-        "confidence": 0.5,
+def parse_researcher(raw: str) -> dict:
+    data = _extract_json(raw)
+    if isinstance(data, dict) and isinstance(data.get("evidence"), list):
+        evidence = [
+            e for e in data["evidence"]
+            if isinstance(e, dict) and "source" in e and "content" in e
+        ]
+        return {
+            "agent": "Researcher",
+            "evidence": evidence,
+            "tool_used": _tool_used(data, ["DomainKnowledge"]),
+        }
+    return {
+        "agent": "Researcher",
+        "evidence": [{"source": "fallback", "content": raw[:800]}],
+        "tool_used": [],
     }
-    for k, v in defaults.items():
-        if k not in data:
-            data[k] = v
-    if "confidence" in data:
-        data["confidence"] = max(0.0, min(1.0, float(data["confidence"])))
-    return data
 
 
-# ── Public interface ──────────────────────────────────────────────────────────
+def parse_planner(raw: str) -> dict:
+    data = _extract_json(raw)
+    if isinstance(data, dict):
+        plan = [
+            s for s in (data.get("proposed_plan") or [])
+            if isinstance(s, dict) and "step" in s and "description" in s
+        ]
+        return {
+            "agent": "Planner+Synthesizer",
+            "proposed_plan": plan,
+            "final_choice": str(data.get("final_choice") or "").strip(),
+            "reasoning": str(data.get("reasoning") or "").strip(),
+            "tool_used": _tool_used(data, ["Reasoning"]),
+        }
+    return {
+        "agent": "Planner+Synthesizer",
+        "proposed_plan": [],
+        "final_choice": raw[:800].strip(),
+        "reasoning": "",
+        "tool_used": [],
+    }
+
+
+def parse_critic(raw: str) -> dict:
+    data = _extract_json(raw)
+    if isinstance(data, dict):
+        conflicts = [c for c in (data.get("conflicts") or []) if isinstance(c, dict)]
+        return {
+            "agent": "Critic",
+            "conflicts": conflicts,
+            "resolved": list(data.get("resolved") or []),
+            "unresolved": list(data.get("unresolved") or []),
+            "key_conflicts_prioritized": bool(data.get("key_conflicts_prioritized", True)),
+            "tool_used": _tool_used(data, ["ConflictAnalysis"]),
+        }
+    return {
+        "agent": "Critic",
+        "conflicts": [],
+        "resolved": [],
+        "unresolved": [],
+        "key_conflicts_prioritized": True,
+        "tool_used": [],
+    }
+
+
+# ── Legacy shim ───────────────────────────────────────────────────────────────
 
 def structure_output(raw: str, agent_role: str) -> dict:
-    """
-    Parse raw agent output into a validated structured dict.
-
-    Returns a dict with keys: analysis, solution, assumptions, tradeoffs,
-    risks, failure_cases, confidence, _parse_errors.
-    """
-    analysis, structured_str = extract_sections(raw)
-
-    parsed = _parse_json(structured_str) if structured_str else None
-
-    if parsed is None:
-        parsed = _repair_with_llm(raw)
-
-    if parsed is None:
-        # Hard fallback: keep entire raw output as solution (no truncation)
-        parsed = {
-            "solution": raw if raw else "Unable to parse solution",
-            "assumptions": [],
-            "tradeoffs": [],
-            "risks": ["Output parsing failed"],
-            "failure_cases": [],
-            "confidence": 0.3,
-        }
-
-    parsed = _apply_defaults(parsed)
-    errors = _validate_schema(parsed)
-
-    return {
-        "agent": agent_role,
-        "analysis": analysis,
-        **{k: parsed.get(k) for k in REQUIRED_KEYS},
-        "_parse_errors": errors,
-    }
+    """Route to the appropriate role-specific parser."""
+    if agent_role == "researcher":
+        return parse_researcher(raw)
+    if agent_role == "planner_synthesizer":
+        return parse_planner(raw)
+    if agent_role == "critic":
+        return parse_critic(raw)
+    parsed = _extract_json(raw)
+    return parsed if isinstance(parsed, dict) else {"raw": raw[:500]}

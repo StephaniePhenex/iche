@@ -116,30 +116,25 @@ def print_iteration_banner(n: int) -> None:
 
 
 def print_conflict(conflict: dict, index: int) -> None:
-    print(_color(f"\n  [{index}] {conflict.get('topic', 'Unknown')}", BOLD + RED))
-    for key in ("position_A", "position_B", "position_C"):
-        if key in conflict:
-            print(_color(f"      {key}: ", DIM) + conflict[key])
-    if "required_resolution" in conflict:
-        print(_color("      → Resolution needed: ", YELLOW) + conflict["required_resolution"])
+    print(_color(f"\n  [{index}] [{conflict.get('type', '')}] {conflict.get('description', '')[:100]}", BOLD + RED))
+    agents_involved = conflict.get("agents_involved", [])
+    if agents_involved:
+        print(_color(f"      Agents: {', '.join(agents_involved)}", DIM))
+    if "resolution_suggestion" in conflict:
+        print(_color("      → Resolution: ", YELLOW) + conflict["resolution_suggestion"])
 
 
 def print_final(final: dict) -> None:
     print_header("FINAL SYNTHESIZED DECISION")
     print()
-    print(_color("Solution:", BOLD + GREEN))
-    print(f"  {final.get('final_solution', 'N/A')}")
+    print(_color("Final Choice:", BOLD + GREEN))
+    print(f"  {final.get('final_choice', 'N/A')}")
     print()
-    print(_color("Why this solution:", BOLD))
-    for reason in final.get("why_this", []):
-        print(f"  • {reason}")
-    if final.get("rejected_options"):
+    print(_color("Reasoning:", BOLD))
+    print(f"  {final.get('reasoning', '')}")
+    if final.get("unresolved_issues"):
         print()
-        print(_color("Rejected alternatives:", BOLD))
-        for opt in final.get("rejected_options", []):
-            print(f"  ✗ {opt}")
-    print()
-    conf = final.get("confidence", 0.0)
-    bar = "█" * int(conf * 20) + "░" * (20 - int(conf * 20))
-    print(_color(f"Confidence: [{bar}] {conf:.0%}", GREEN if conf > 0.7 else YELLOW))
+        print(_color("Unresolved Issues:", BOLD + YELLOW))
+        for issue in final.get("unresolved_issues", []):
+            print(f"  ⚠ {issue}")
     print()
