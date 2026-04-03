@@ -8,7 +8,7 @@ Validates JSON schema. Falls back to LLM repair if JSON is malformed.
 import re
 import json
 from typing import Optional
-from models import call_model
+from models import call_model, repair_model_name
 
 # ── Required keys in structured output ───────────────────────────────────────
 
@@ -86,17 +86,27 @@ def _validate_schema(data: dict) -> list[str]:
     return errors
 
 
+# Preserve full raw text for repair (very long answers); cap only for pathological size.
+_REPAIR_INPUT_MAX_CHARS = 200_000
+
+
 def _repair_with_llm(raw_output: str) -> Optional[dict]:
     """Ask a model to extract and fix the JSON from a malformed output."""
+    snippet = raw_output if len(raw_output) <= _REPAIR_INPUT_MAX_CHARS else raw_output[:_REPAIR_INPUT_MAX_CHARS]
     repair_prompt = (
         "The following text is a model response that should contain a JSON object "
         "with these exact keys: solution (str), assumptions (list), tradeoffs (list), "
         "risks (list), failure_cases (list), confidence (float 0-1).\n\n"
+        "The `solution` string may be very long — preserve its FULL text verbatim; do not shorten or summarize it.\n\n"
         "Extract and return ONLY the valid JSON object. Nothing else.\n\n"
-        f"Text:\n{raw_output[:3000]}"
+        f"Text:\n{snippet}"
     )
     try:
-        repaired = call_model("mock", repair_prompt)
+        repaired = call_model(
+            repair_model_name(),
+            repair_prompt,
+            "You extract and repair JSON only. Reply with a single JSON object, no markdown fences.",
+        )
         _, structured_str = extract_sections(repaired)
         if not structured_str:
             structured_str = repaired
@@ -139,9 +149,9 @@ def structure_output(raw: str, agent_role: str) -> dict:
         parsed = _repair_with_llm(raw)
 
     if parsed is None:
-        # Hard fallback: minimal valid structure
+        # Hard fallback: keep entire raw output as solution (no truncation)
         parsed = {
-            "solution": raw[:300] if raw else "Unable to parse solution",
+            "solution": raw if raw else "Unable to parse solution",
             "assumptions": [],
             "tradeoffs": [],
             "risks": ["Output parsing failed"],

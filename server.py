@@ -75,7 +75,7 @@ def _state_to_chat_result(state: dict) -> dict:
                     "agent": role,
                     "solution": out.get("solution") or "",
                     "confidence": float(out.get("confidence") or 0.0),
-                    "analysis": (out.get("analysis") or "")[:800],
+                    "analysis": out.get("analysis") or "",
                 }
             )
         n_conf = len(rec.get("conflicts") or [])

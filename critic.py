@@ -117,8 +117,8 @@ def _rule_based_critic(structured_outputs: dict[str, dict]) -> dict:
             if similarity < 0.3:
                 conflicts.append({
                     "topic": f"Solution approach: {r1} vs {r2}",
-                    "position_A": f"{r1}: {solutions[r1][:120]}",
-                    "position_B": f"{r2}: {solutions[r2][:120]}",
+                    "position_A": f"{r1}: {solutions[r1]}",
+                    "position_B": f"{r2}: {solutions[r2]}",
                     "required_resolution": "Agents must align on core architectural approach",
                 })
             elif similarity > 0.6:

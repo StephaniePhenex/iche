@@ -39,22 +39,35 @@ AGENTS = {
 
 # ── Output format contract (injected into every prompt) ──────────────────────
 
-_OUTPUT_FORMAT = """
+_SOLUTION_DEPTH = """
+The JSON field `solution` is what the **end user reads as the main answer**, for **any** topic (travel, code, writing, legal, health, business, math, etc.).
+
+Rules for `solution` — apply to every domain:
+- Put here the **same complete answer** you would give in a normal chat if the user had **no** word limit: full steps, lists, code blocks (as plain text inside the JSON string with \\n), examples, caveats, and specifics. **Do not** replace it with a short abstract, executive summary, or "high-level only" version unless the user explicitly asked for a brief summary.
+- **Do not** compress, bullet-swap away, or omit substantive paragraphs to fit a perceived length cap. If the honest answer is long, the `solution` string must be long.
+- Use `\\n` for line breaks inside the JSON string so formatting stays readable.
+
+[Analysis] holds your reasoning; `solution` must still contain the **full user-facing deliverable**, not a teaser.
+""".strip()
+
+_OUTPUT_FORMAT = f"""
 Your response MUST follow this exact format:
 
 [Analysis]
-(your reasoning here — free text, 2-4 paragraphs)
+(your reasoning — as many paragraphs as needed; same depth you would use without a length cap)
 
 [Structured Output]
-JSON ONLY:
-{
-  "solution": "concise description of your proposed solution",
+JSON ONLY (valid JSON; escape quotes and newlines inside strings):
+{{
+  "solution": "FULL actionable answer here — see rules below",
   "assumptions": ["assumption 1", "assumption 2"],
   "tradeoffs": ["tradeoff 1", "tradeoff 2"],
   "risks": ["risk 1", "risk 2"],
   "failure_cases": ["failure case 1", "failure case 2"],
   "confidence": 0.0
-}
+}}
+
+{_SOLUTION_DEPTH}
 
 Ensure confidence is a float between 0.0 and 1.0.
 Do not include anything outside these two sections.
@@ -73,7 +86,9 @@ def _base_prompt(role: str, task: str, conflicts: Optional[list] = None) -> tupl
         f"Your cognitive profile: {description}\n\n"
         "You help with ANY kind of question — travel planning, health, writing, career, relationships, "
         "finance, creativity, lifestyle decisions, and more. You are NOT limited to technical topics.\n"
-        "Be direct, specific, warm where appropriate, and intellectually honest about tradeoffs."
+        "Be direct, specific, warm where appropriate, and intellectually honest about tradeoffs.\n\n"
+        "Output discipline: the user's screen shows the JSON `solution` field as your main visible proposal. "
+        "Write it like a standalone answer you would send if the user had only that field — rich detail, not a blurb."
     )
 
     if conflicts:

@@ -29,6 +29,22 @@ def is_mock_mode() -> bool:
     return not (_has_openai() or _has_anthropic() or _has_google())
 
 
+def repair_model_name() -> str:
+    """
+    Provider for JSON repair in structurer — must not use model_name='mock' when keys exist,
+    or repair always yields literal solution \"mock\".
+    """
+    if is_mock_mode():
+        return "mock"
+    if _has_google():
+        return "google"
+    if _has_openai():
+        return "openai"
+    if _has_anthropic():
+        return "anthropic"
+    return "mock"
+
+
 # ── Real API calls ────────────────────────────────────────────────────────────
 
 def _call_openai(prompt: str, system_prompt: str) -> str:
@@ -41,7 +57,7 @@ def _call_openai(prompt: str, system_prompt: str) -> str:
             {"role": "user", "content": prompt},
         ],
         temperature=0.7,
-        max_tokens=1500,
+        max_tokens=8192,
     )
     return resp.choices[0].message.content or ""
 
@@ -51,7 +67,7 @@ def _call_anthropic(prompt: str, system_prompt: str) -> str:
     client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
     resp = client.messages.create(
         model="claude-3-5-sonnet-20241022",
-        max_tokens=1500,
+        max_tokens=8192,
         system=system_prompt,
         messages=[{"role": "user", "content": prompt}],
     )
@@ -69,7 +85,7 @@ def _call_google(prompt: str, system_prompt: str) -> str:
         config=types.GenerateContentConfig(
             system_instruction=system_prompt,
             temperature=0.7,
-            max_output_tokens=3000,
+            max_output_tokens=8192,
         ),
     )
     return resp.text or ""
@@ -394,6 +410,9 @@ _MOCK_CRITIC = {
 
 
 def _mock_agent_response(agent_role: str, iteration: int, task: str) -> str:
+    # AGENTS registry uses creative_explorer; mock table still keyed as divergent_thinker
+    if agent_role == "creative_explorer":
+        agent_role = "divergent_thinker"
     pos = _MOCK_POSITIONS.get(agent_role, {}).get(iteration, {})
     if not pos:
         pos = _MOCK_POSITIONS[agent_role][3]

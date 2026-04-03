@@ -108,7 +108,7 @@ def _synthesize(state: dict) -> dict:
             continue
         sim = utils.cosine_similarity(primary_solution, sol)
         if sim < 0.3:
-            rejected.append(f"{role}: {sol[:120]}...")
+            rejected.append(f"{role}: {sol}")
 
     avg_conf = utils.average_confidence(structured)
 
