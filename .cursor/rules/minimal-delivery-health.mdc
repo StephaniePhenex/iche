@@ -1,0 +1,40 @@
+---
+description: Minimal delivery guardrails — decision gate, default bias, React render purity (minimal-delivery-health skill)
+alwaysApply: true
+---
+
+# Minimal delivery & health（本仓库生效）
+
+与全局 skill `minimal-delivery-health` 一致：反对无证据的过度设计，优先最小有效改动。
+
+## 决策门（必须先回答再做大改动）
+
+在增加抽象、新服务/队列、大重构、基础设施变更之前，必须能回答：
+
+1. **今天具体是什么问题？**
+2. **证据是什么？**（bug、指标、延迟、失败记录）
+3. **最小可行修复是什么？**
+
+答不全 → **不做**；问题纯属假设 → **延后**；方案不是最小 → **先缩小**。
+
+## 默认倾向（违背须写明理由）
+
+- 重复代码 **优于** 过早抽象  
+- 简单流程 **优于** “可扩展”系统  
+- 同步 **优于** 异步（除非已证实需要）  
+- 单体 **优于** 分布式  
+- **硬编码优于配置**（同一事重复 ≥3 次再抽）  
+- 显式 **优于** 泛化  
+
+无证据时避免：队列、仅一层实现的 repository 服务层、过早缓存/多租户/特性开关实验。
+
+## React 渲染纯净性
+
+- **render**：只根据 state/props **描述 UI**，禁止在其中 `setState`、发请求、写全局。  
+- 副作用只在 **effect / 事件处理** 中。
+
+## 过度设计快速记分（可选自检）
+
+六项各 0/1/2（无证据、假想未来、灵活性税、一口吃成胖子、聪明难读、回归面变大），总分 ≥6 须拆小步或明确指标与回滚；9–12 **停止**。
+
+完整说明见本机 skill：`~/.cursor/skills/minimal-delivery-health/SKILL.md`。

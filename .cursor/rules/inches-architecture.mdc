@@ -1,0 +1,34 @@
+---
+description: Inches repo layout — Python multi-agent engine + Vite React frontend
+alwaysApply: true
+---
+
+# Inches 项目架构
+
+## 目录与职责
+
+| 区域 | 路径 | 说明 |
+|------|------|------|
+| 多智能体引擎 | 仓库根目录 `*.py` | CLI 与编排逻辑，不依赖前端 |
+| Web UI | `frontend/` | Vite + React 19 + TypeScript + Tailwind + React Router |
+
+## Python（根目录）
+
+- `main.py` — CLI 入口（`python main.py`，可选 `--task` / `--save` / `--no-color`）
+- `orchestrator.py` — 迭代循环：并行跑 agent → `structurer` → `critic` → 冲突注入 → 收敛判断 → 最终综合
+- `agents.py` — 角色定义与 `run_agent`
+- `models.py` — 统一 LLM 调用（OpenAI / Anthropic / Google）；无 API key 时为 **mock 模式**
+- `structurer.py` / `critic.py` / `state.py` / `utils.py` — 结构化输出、批评者、状态、终端输出与工具函数
+
+环境变量（任选其一即可脱离 mock）：`OPENAI_API_KEY`、`ANTHROPIC_API_KEY`、`GOOGLE_API_KEY` 或 `GEMINI_API_KEY`。
+
+## 前端（`frontend/`）
+
+- 路由：`/` → `/login`，`/register`，受保护的 `/chat`（见 `App.tsx` + `AuthContext`）
+- `src/services/api.ts` — 所有 HTTP 调用；**未设置 `VITE_API_URL` 时全程 mock**，便于无后端开发 UI
+- 真实审议：根目录 `server.py`（`python server.py`）提供上述 `POST /api/*`，`chat` 调用 `orchestrator.run_deliberation`；契约以 `api.ts` 类型为准
+
+## 协作约定
+
+- 改编排或 agent 行为：优先动 `orchestrator.py`、`agents.py`、`critic.py`、`structurer.py`，保持 `models.py` 为唯一 LLM 出口。
+- 改 UI 契约：同步更新 `frontend/src/services/api.ts` 的类型与（未来）后端实现。
